@@ -53,7 +53,7 @@ resumable_io io{handle};
 /// ...
 IAsyncAction coroutine2()
 {
-    co_await io.start([]
+    co_await io.start([](OVERLAPPED &o)
     {
        check(::ReadFile(handle,...));
     });
@@ -70,7 +70,7 @@ resumable_io io{handle};
 /// ...
 IAsyncAction coroutine3()
 {
-    auto running_io_operation = winrt_ex::start(io.start([]
+    auto running_io_operation = winrt_ex::start(io.start([](OVERLAPPED &o)
     {
        check(::ReadFile(handle,...));
     });
@@ -122,7 +122,7 @@ IAsyncAction coroutine5()
 {
     try
     {
-        auto bytes_received = co_await io.start([]
+        auto bytes_received = co_await io.start([](OVERLAPPED &o)
         {
             check(::ReadFile(handle_to_serial_port, ... ));
         }, 10s);
