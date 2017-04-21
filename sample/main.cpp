@@ -60,10 +60,29 @@ winrt_ex::async_action test_when_any_bool()
 	co_await winrt_ex::when_any(bool_timer(3s), bool_timer(8s));
 }
 
+winrt_ex::async_action test_async_timer()
+{
+	winrt_ex::async_timer atimer;
+
+	auto timer_task = winrt_ex::start_async(atimer.wait(20min));
+	co_await 2s;
+	atimer.cancel();
+	try
+	{
+		co_await timer_task;
+	}
+	catch (winrt::hresult_canceled)
+	{
+		int j = 0;
+		// TODO
+	}
+}
+
 int main()
 {
 	winrt::init_apartment();
 	{
+		test_async_timer().get();
 		test_when_all_void().get();
 		test_when_all_bool().get();
 		test_when_any_void().get();

@@ -270,8 +270,9 @@ namespace winrt_ex
 		struct when_any_block_value : when_any_block_base
 		{
 			T result;
+			size_t index;
 
-			void finished(T &&result_) noexcept
+			void finished(T &&result_, size_t index_) noexcept
 			{
 				if (resume.load(std::memory_order_relaxed))
 				{
@@ -279,6 +280,7 @@ namespace winrt_ex
 					if (value)
 					{
 						result = std::move(result_);
+						index = index_;
 						value();
 					}
 				}
@@ -344,11 +346,11 @@ namespace winrt_ex
 
 		//non-void case
 		template<class T, class Awaitable>
-		inline winrt::fire_and_forget when_any_helper_single_value(std::shared_ptr<when_any_block_value<T>> master, Awaitable task) noexcept
+		inline winrt::fire_and_forget when_any_helper_single_value(std::shared_ptr<when_any_block_value<T>> master, Awaitable task, size_t index) noexcept
 		{
 			try
 			{
-				master->finished(co_await task);
+				master->finished(co_await task, index);
 			}
 			catch(...)
 			{
@@ -359,7 +361,7 @@ namespace winrt_ex
 		template<class T, class Tuple, size_t...I>
 		inline void when_any_helper_value(const std::shared_ptr<when_any_block_value<T>> &master, const Tuple &tuple, std::index_sequence<I...>) noexcept
 		{
-			[[maybe_unused]] auto x = { when_any_helper_single_value<T>(master, std::get<I>(tuple))... };
+			[[maybe_unused]] auto x = { when_any_helper_single_value<T>(master, std::get<I>(tuple), I)... };
 		}
 
 
@@ -388,12 +390,12 @@ namespace winrt_ex
 					when_any_helper_value(ptr, awaitables, index_t{});
 				}
 
-				T await_resume() const
+				std::pair<T, size_t> await_resume() const
 				{
 					if (ptr->exception)
 						std::rethrow_exception(ptr->exception);
 					else
-						return std::move(ptr->result);
+						return { std::move(ptr->result), ptr->index };
 				}
 			};
 
@@ -479,12 +481,365 @@ namespace winrt_ex
 		{
 			return{ async };
 		}
+
+		// run
+		// methods "starts" an asynchronous operation that only starts in await_suspend
+		struct default_policy
+		{
+			template<class T>
+			struct promise
+			{
+				template<class Awaitable>
+				static ::winrt::Windows::Foundation::IAsyncOperation<T> start(Awaitable awaitable)
+				{
+					auto result = co_await awaitable;
+					co_return result;
+				}
+			};
+
+			template<>
+			struct promise<void>
+			{
+				template<class Awaitable>
+				static ::winrt::Windows::Foundation::IAsyncAction start(Awaitable awaitable)
+				{
+					co_await awaitable;
+				}
+			};
+		};
+
+		struct ex_policy
+		{
+			template<class T>
+			struct promise
+			{
+				template<class Awaitable>
+				static async_operation<T> start(Awaitable awaitable)
+				{
+					auto result = co_await awaitable;
+					co_return result;
+				}
+			};
+
+			template<>
+			struct promise<void>
+			{
+				template<class Awaitable>
+				static async_action start(Awaitable awaitable)
+				{
+					co_await awaitable;
+				}
+			};
+		};
+
+		template<class Policy,class Awaitable>
+		inline auto start(const Awaitable &awaitable)
+		{
+			// If you get "error C2039: 'await_resume': is not a member of '...'" error on a following line
+			// This means that Awaitable is not derived from IAsyncAction/async_action or IAsyncOperation<T>/async_operation<T>
+			using promise_wrapper_t = typename Policy::promise<decltype(awaitable.await_resume())>;
+			return promise_wrapper_t::start(awaitable);
+		}
+
+		template<class Awaitable>
+		inline auto start(const Awaitable &awaitable)
+		{
+			return start<default_policy>(awaitable);
+		}
+
+		template<class Awaitable>
+		inline auto start_async(const Awaitable &awaitable)
+		{
+			return start<ex_policy>(awaitable);
+		}
+
+		// Cancellable timer
+		class async_timer
+		{
+			struct timer_traits : winrt::impl::handle_traits<PTP_TIMER>
+			{
+				static void close(type value) noexcept
+				{
+					CloseThreadpoolTimer(value);
+				}
+			};
+
+			winrt::impl::handle<timer_traits> timer
+			{ 
+				CreateThreadpoolTimer([](PTP_CALLBACK_INSTANCE, void * context, PTP_TIMER) noexcept
+				{
+					static_cast<async_timer *>(context)->resume();
+				}, this, nullptr) 
+			};
+
+			std::atomic_flag resumed{ false };
+			std::atomic<bool> cancelled{ false };
+			std::experimental::coroutine_handle<> resume_location{ nullptr };
+
+			//
+			auto get() const noexcept
+			{
+				return winrt::get_abi(timer);
+			}
+
+			bool is_cancelled() const noexcept
+			{
+				return cancelled.load(std::memory_order_acquire);
+			}
+
+			void resume() noexcept
+			{
+				if (resume_location && !resumed.test_and_set())
+					resume_location();
+			}
+
+			void set_handle(std::experimental::coroutine_handle<> handle)
+			{
+				resume_location = handle;
+			}
+
+		public:
+			auto wait(winrt::Windows::Foundation::TimeSpan duration) noexcept
+			{
+				class awaiter
+				{
+					async_timer *timer;
+					winrt::Windows::Foundation::TimeSpan duration;
+
+				public:
+					awaiter(async_timer *timer, winrt::Windows::Foundation::TimeSpan duration) noexcept :
+						timer{ timer },
+						duration{ duration }
+					{}
+
+					bool await_ready() const noexcept
+					{
+						return duration.count() <= 0;
+					}
+
+					void await_suspend(std::experimental::coroutine_handle<> handle) noexcept
+					{
+						timer->set_handle(handle);
+						int64_t relative_count = -duration.count();
+						SetThreadpoolTimer(timer->get(), reinterpret_cast<PFILETIME>(&relative_count), 0, 0);
+					}
+
+					void await_resume() const
+					{
+						timer->set_handle(nullptr);
+						if (timer->is_cancelled())
+							throw winrt::hresult_canceled();
+					}
+				};
+
+				resumed.clear();
+				return awaiter{ this,duration };
+			}
+
+			void cancel()
+			{
+				cancelled.store(true, std::memory_order_release);
+				SetThreadpoolTimer(get(), nullptr, 0, 0);
+				WaitForThreadpoolTimerCallbacks(get(), TRUE);
+				resume();
+			}
+		};
+
+		// resumeable I/O with timeout
+		template<class D>
+		class supports_timeout
+		{
+			struct timer_traits : winrt::impl::handle_traits<PTP_TIMER>
+			{
+				static void close(type value) noexcept
+				{
+					CloseThreadpoolTimer(value);
+				}
+			};
+
+			winrt::impl::handle<timer_traits> m_timer
+			{ 
+				CreateThreadpoolTimer([](PTP_CALLBACK_INSTANCE, void * context, PTP_TIMER) noexcept
+				{
+					static_cast<D *>(context)->on_timeout();
+				}, static_cast<D *>(this), nullptr)
+			};
+			winrt::Windows::Foundation::TimeSpan timeout;
+
+		protected:
+			using supports_timeout_base = supports_timeout;
+
+			supports_timeout(winrt::Windows::Foundation::TimeSpan timeout) :
+				timeout{ timeout }
+			{}
+
+			void set_timer() const noexcept
+			{
+				if (timeout.count())
+				{
+					int64_t relative_count = -timeout.count();
+					SetThreadpoolTimer(winrt::get_abi(m_timer), reinterpret_cast<PFILETIME>(&relative_count), 0, 0);
+				}
+			}
+
+			void reset_timer() const noexcept
+			{
+				if (timeout.count())
+				{
+					SetThreadpoolTimer(winrt::get_abi(m_timer), nullptr, 0, 0);
+					WaitForThreadpoolTimerCallbacks(winrt::get_abi(m_timer), TRUE);
+				}
+			}
+		};
+
+		class resumable_io_timeout
+		{
+			struct io_traits : winrt::impl::handle_traits<PTP_IO>
+			{
+				static void close(type value) noexcept
+				{
+					CloseThreadpoolIo(value);
+				}
+			};
+
+			class my_awaitable_base : public OVERLAPPED
+			{
+			protected:
+				uint32_t m_result{};
+				std::experimental::coroutine_handle<> m_resume{ nullptr };
+				virtual void resume() = 0;
+
+				my_awaitable_base() : OVERLAPPED{}
+				{}
+
+			public:
+				static void __stdcall callback(PTP_CALLBACK_INSTANCE, void *, void * overlapped, ULONG result, ULONG_PTR, PTP_IO) noexcept
+				{
+					auto context = static_cast<my_awaitable_base *>(static_cast<OVERLAPPED *>(overlapped));
+					context->m_result = result;
+					context->resume();
+				}
+			};
+
+			template<class F>
+			class awaitable : protected my_awaitable_base, protected F, protected supports_timeout<awaitable<F>>
+			{
+				PTP_IO m_io{ nullptr };
+				HANDLE object;
+
+				virtual void resume() override
+				{
+					reset_timer();
+					m_resume();
+				}
+
+			public:
+				awaitable(PTP_IO io, HANDLE object, F &&callback, winrt::Windows::Foundation::TimeSpan timeout) noexcept :
+					m_io{ io },
+					object{ object },
+					F{ std::forward<F>(callback) },
+					supports_timeout_base{ timeout }
+				{}
+
+				bool await_ready() const noexcept
+				{
+					return false;
+				}
+
+				auto await_suspend(std::experimental::coroutine_handle<> resume_handle)
+				{
+					m_resume = resume_handle;
+					StartThreadpoolIo(m_io);
+
+					try
+					{
+						return call(std::is_same<void, decltype((*this)(std::declval<OVERLAPPED &>()))>{});
+					}
+					catch (...)
+					{
+						CancelThreadpoolIo(m_io);
+						throw;
+					}
+				}
+
+				void call(std::true_type)
+				{
+					(*this)(*this);
+					set_timer();
+				}
+
+				bool call(std::false_type)
+				{
+					if ((*this)(*this))
+					{
+						set_timer();
+						return true;
+					}
+					else
+					{
+						CancelThreadpoolIo(m_io);
+						return false;
+					}
+				}
+
+				uint32_t await_resume()
+				{
+					if (m_result != NO_ERROR && m_result != ERROR_HANDLE_EOF)
+					{
+						if (m_result == ERROR_OPERATION_ABORTED)
+							m_result = ERROR_TIMEOUT;
+						throw hresult_error(HRESULT_FROM_WIN32(m_result));
+					}
+
+					return static_cast<uint32_t>(InternalHigh);
+				}
+
+				void on_timeout()
+				{
+					// cancel io
+					CancelIoEx(object, this);
+				}
+			};
+
+			winrt::impl::handle<io_traits> m_io;
+			HANDLE object;
+
+			//
+		public:
+			resumable_io_timeout(HANDLE object) :
+				object{ object },
+				m_io{ CreateThreadpoolIo(object, my_awaitable_base::callback, nullptr, nullptr) }
+			{
+				if (!m_io)
+				{
+					winrt::throw_last_error();
+				}
+			}
+
+			template <typename F>
+			auto start(F &&callback, winrt::Windows::Foundation::TimeSpan timeout)
+			{
+				return awaitable<F>{get(), object, std::forward<F>(callback), timeout};
+			}
+
+			PTP_IO get() const noexcept
+			{
+				return winrt::get_abi(m_io);
+			}
+		};
 	}
 
-	using details::when_all;
-	using details::when_any;
 	using details::async_action;
 	using details::async_operation;
+	using details::default_policy;
+	using details::ex_policy;
+	using details::async_timer;
+	using details::resumable_io_timeout;
+
+	using details::start;
+	using details::start_async;
+	using details::when_all;
+	using details::when_any;
 }
 
 namespace std::experimental
