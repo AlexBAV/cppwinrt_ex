@@ -35,7 +35,7 @@ The only problem with these classes is that they force continuation on original 
 
 `cppwinrt` provides a number of convenient utility classes to initiate asynchronous waits and I/O, among other things. The only problem with those classes is that the operation does not start until the caller begins _awaiting_ its result. Consider the following:
 
-```
+```C++
 IAsyncAction coroutine1()
 {
     // ...
@@ -48,7 +48,7 @@ In this code snippet, `co_await 3s;` is translated to `co_await resume_after{3s}
 
 The same problem exists with `resumeable_io` class:
 
-```
+```C++
 resumable_io io{handle};
 /// ...
 IAsyncAction coroutine2()
@@ -65,7 +65,7 @@ And again, you cannot start an I/O and do other stuff before you _await_ for ope
 
 `winrt_ex` provides simple wrapper function that starts an asynchronous operation for you:
 
-```
+```C++
 resumable_io io{handle};
 /// ...
 IAsyncAction coroutine3()
@@ -89,7 +89,7 @@ Lirary also has `winrt_ex::start_async` version that has `async_action` or `asyn
 
 This is an awaitable cancellable timer. Its usage is very simple:
 
-```
+```C++
 winrt_ex::async_timer timer;
 // ...
 IAsyncAction coroutine4()
@@ -115,7 +115,7 @@ void cancel_wait()
 
 This is a version of `cppwinrt`'s `resumable_io` class that supports timeout for I/O operations. Its `start` method requires an additional parameter that specifies the I/O operation's timeout. If operation does not finish within a given time, it is cancelled and `hresult_cancelled` exception is propagated to the continuation:
 
-```
+```C++
 winrt_ex::resumable_io_timeout io{ handle_to_serial_port };
 // ...
 IAsyncAction coroutine5()
@@ -145,7 +145,7 @@ All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>
 
 If all input tasks produce no result, `when_all` also produces no result, otherwise, it produces an `std::tuple<>` of all input parameter types.
 
-```
+```C++
 winrt_ex::async_action void_timer(TimeSpan duration)
 {
 	co_await duration;
@@ -183,7 +183,7 @@ All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>
 
 If all input tasks produce no result, `when_any` produces the index to the first completed task. Otherwise, it produces `std::pair<T, size_t>`, where the first result is the result of completed task and second is an index of completed task:
 
-```
+```C++
 IAsyncAction coroutine7()
 {
     // The following operation will complete in 10 seconds and produce 0
