@@ -8,24 +8,41 @@ namespace winrt_ex
 {
 	namespace details
 	{
+		struct no_result {};
 		// get_result_type 
 		// get the coroutine result type
-		// yields either void_type or result_type<T> where T is a coroutine result type
-		struct void_type {};
-
+		// supports IAsyncAction, async_action, IAsyncOperation<T>, async_operation<T> and awaitable object that implements await_resume
+		// yields result_type<T> where T is a coroutine result type
 		template<class T>
 		struct result_type
 		{
 			using type = T;
 		};
 
-		constexpr void_type get_result_type(const ::winrt::Windows::Foundation::IAsyncAction &)
+		constexpr result_type<void> get_result_type(const ::winrt::Windows::Foundation::IAsyncAction &)
 		{
 			return {};
 		}
 
 		template<class T>
 		constexpr result_type<T> get_result_type(const ::winrt::Windows::Foundation::IAsyncOperation<T> &)
+		{
+			return {};
+		}
+
+		// primary template handles types that do not implement await_resume:
+		template<class, class = std::void_t<>>
+		struct has_await_resume : std::false_type {};
+
+		// specialization recognizes types that do implement await_resume
+		template<class T>
+		struct has_await_resume<T, std::void_t<decltype(std::declval<T&>().await_resume())>> : std::true_type {};
+
+		template<class T>
+		constexpr bool has_await_resume_v = has_await_resume<T>::value;
+
+		template<class T>
+		constexpr result_type<decltype(std::declval<T &>().await_resume())> get_result_type(const T &, std::enable_if_t<has_await_resume_v<T>, void *> = nullptr)
 		{
 			return {};
 		}
@@ -50,13 +67,20 @@ namespace winrt_ex
 		using get_first_t = typename get_first<T...>::type;
 
 		// when_all
-		template<class Master, class Awaitable>
-		inline winrt::fire_and_forget when_all_helper_single(Master &master, Awaitable task) noexcept
+		template<size_t Index, class Master, class Awaitable>
+		inline auto when_all_helper_single(Master &master, Awaitable task) noexcept ->
+			std::enable_if_t<
+				std::is_same_v<
+					result_type<void>,
+					decltype(get_result_type(task))
+				>,
+				winrt::fire_and_forget
+			>
 		{
 			try
 			{
 				co_await task;
-				master.finished();
+				master.finished<Index>();
 			}
 			catch (...)
 			{
@@ -65,7 +89,14 @@ namespace winrt_ex
 		}
 
 		template<size_t Index, class Master, class Awaitable>
-		inline winrt::fire_and_forget when_all_helper_single2(Master &master, Awaitable task) noexcept
+		inline auto when_all_helper_single(Master &master, Awaitable task) noexcept ->
+			std::enable_if_t<
+				!std::is_same_v<
+					result_type<void>,
+					decltype(get_result_type(task))
+				>,
+				winrt::fire_and_forget
+			>
 		{
 			try
 			{
@@ -78,15 +109,9 @@ namespace winrt_ex
 		}
 
 		template<class Master, class Tuple, size_t...I>
-		inline void when_all_helper(Master &master, const Tuple &tuple, std::index_sequence<I...>) noexcept
+		inline void when_all_helper(Master &master, Tuple &&tuple, std::index_sequence<I...>) noexcept
 		{
-			[[maybe_unused]] auto x = { when_all_helper_single(master, std::get<I>(tuple))... };
-		}
-
-		template<class Master, class Tuple, size_t...I>
-		inline void when_all_helper2(Master &master, const Tuple &tuple, std::index_sequence<I...>) noexcept
-		{
-			[[maybe_unused]] auto x = { when_all_helper_single2<I>(master, std::get<I>(tuple))... };
+			[[maybe_unused]] auto x = { when_all_helper_single<I>(master, std::get<I>(std::move(tuple)))... };
 		}
 
 		// void case
@@ -99,7 +124,7 @@ namespace winrt_ex
 			std::tuple<std::decay_t<Awaitables>...> awaitables;
 
 			when_all_awaitable_base(Awaitables &&...awaitables) noexcept :
-			awaitables{ std::forward<Awaitables>(awaitables)... },
+				awaitables{ std::forward<Awaitables>(awaitables)... },
 				counter{ sizeof...(awaitables) }
 			{}
 
@@ -140,6 +165,13 @@ namespace winrt_ex
 				when_all_awaitable_base{ static_cast<when_all_awaitable_base &&>(o) }
 			{}
 
+			template<size_t, class T>
+			void finished(const T &) noexcept
+			{
+				check_resume();
+			}
+
+			template<size_t>
 			void finished() noexcept
 			{
 				check_resume();
@@ -149,7 +181,7 @@ namespace winrt_ex
 			{
 				resume = handle;
 				using index_t = std::make_index_sequence<sizeof...(Awaitables)>;
-				when_all_helper(*this, awaitables, index_t{});
+				when_all_helper(*this, std::move(awaitables), index_t{});
 			}
 
 			void await_resume() const
@@ -160,7 +192,7 @@ namespace winrt_ex
 		};
 
 		template<class...Awaitables>
-		inline auto when_all_impl(void_type, Awaitables &&...awaitables)
+		inline auto when_all_impl(std::true_type, Awaitables &&...awaitables)
 		{
 			return when_all_awaitable_void<Awaitables...> { std::forward<Awaitables>(awaitables)... };
 		}
@@ -169,13 +201,19 @@ namespace winrt_ex
 		template<class...Awaitables>
 		struct when_all_awaitable_value : when_all_awaitable_base<Awaitables...>
 		{
+			template<class T>
+			struct transform
+			{
+				using type = std::conditional_t<std::is_same_v<result_type<void>, T>, no_result, typename T::type>;
+			};
+
+			template<class T>
+			using transform_t = typename transform<T>::type;
+
 			template<class...Ts>
 			struct get_results_type
 			{
-				template<class T>
-				using get_t = typename T::type;
-
-				using type = std::tuple<get_t<Ts>...>;
+				using type = std::tuple<transform_t<Ts>...>;
 			};
 
 			using results_t = typename get_results_type<decltype(get_result_type(std::declval<Awaitables>()))...>::type;
@@ -196,11 +234,17 @@ namespace winrt_ex
 				check_resume();
 			}
 
+			template<size_t>
+			void finished() noexcept
+			{
+				check_resume();
+			}
+
 			void await_suspend(std::experimental::coroutine_handle<> handle) noexcept
 			{
 				resume = handle;
 				using index_t = std::make_index_sequence<sizeof...(Awaitables)>;
-				when_all_helper2(*this, awaitables, index_t{});
+				when_all_helper(*this, awaitables, index_t{});
 			}
 
 			results_t await_resume() const
@@ -212,8 +256,8 @@ namespace winrt_ex
 			}
 		};
 
-		template<class T, class...Awaitables>
-		inline auto when_all_impl(result_type<T>, Awaitables &&...awaitables)
+		template<class...Awaitables>
+		inline auto when_all_impl(std::false_type, Awaitables &&...awaitables)
 		{
 			return when_all_awaitable_value<Awaitables...> { std::forward<Awaitables>(awaitables)... };
 		}
@@ -222,7 +266,13 @@ namespace winrt_ex
 		inline auto when_all(Awaitables &&...awaitables)
 		{
 			static_assert(sizeof...(Awaitables) != 0, "when_all must be passed at least one argument");
-			return when_all_impl(get_first_result_type(awaitables...), std::forward<Awaitables>(awaitables)...);
+			using first_type = decltype(get_first_result_type(awaitables...));
+
+			return when_all_impl(
+				std::conjunction<
+					std::is_same<result_type<void>, first_type>,
+					are_all_same_t<decltype(get_result_type(awaitables))...>
+				>{}, std::forward<Awaitables>(awaitables)...);
 		}
 
 		///////////////////////////////////
@@ -302,13 +352,13 @@ namespace winrt_ex
 		}
 
 		template<class Tuple, size_t...I>
-		inline void when_any_helper(const std::shared_ptr<when_any_block_void> &master, const Tuple &tuple, std::index_sequence<I...>) noexcept
+		inline void when_any_helper(const std::shared_ptr<when_any_block_void> &master, Tuple &&tuple, std::index_sequence<I...>) noexcept
 		{
-			[[maybe_unused]] auto x = { when_any_helper_single<I>(master, std::get<I>(tuple))... };
+			[[maybe_unused]] auto x = { when_any_helper_single<I>(master, std::get<I>(std::move(tuple)))... };
 		}
 
 		template<class...Awaitables>
-		inline auto when_any_impl(void_type, Awaitables &&...awaitables)
+		inline auto when_any_impl(result_type<void>, Awaitables &&...awaitables)
 		{
 			struct when_any_awaitable
 			{
@@ -359,9 +409,9 @@ namespace winrt_ex
 		}
 
 		template<class T, class Tuple, size_t...I>
-		inline void when_any_helper_value(const std::shared_ptr<when_any_block_value<T>> &master, const Tuple &tuple, std::index_sequence<I...>) noexcept
+		inline void when_any_helper_value(const std::shared_ptr<when_any_block_value<T>> &master, Tuple &tuple, std::index_sequence<I...>) noexcept
 		{
-			[[maybe_unused]] auto x = { when_any_helper_single_value<T>(master, std::get<I>(tuple), I)... };
+			[[maybe_unused]] auto x = { when_any_helper_single_value<T>(master, std::get<I>(std::move(tuple)), I)... };
 		}
 
 
@@ -409,6 +459,9 @@ namespace winrt_ex
 
 			using type = std::conjunction<std::is_same<first_type, Ts>...>;
 		};
+
+		template<class...Ts>
+		using are_all_same_t = typename are_all_same<Ts...>::type;
 
 		template<class...Ts>
 		constexpr bool are_all_same_v = typename are_all_same<Ts...>::type::value;
@@ -495,6 +548,12 @@ namespace winrt_ex
 					auto result = co_await awaitable;
 					co_return result;
 				}
+
+				static ::winrt::Windows::Foundation::IAsyncOperation<T> wait(winrt::Windows::Foundation::TimeSpan timeout)
+				{
+					co_await timeout;
+					throw winrt::hresult_cancelled{};
+				}
 			};
 
 			template<>
@@ -504,6 +563,12 @@ namespace winrt_ex
 				static ::winrt::Windows::Foundation::IAsyncAction start(Awaitable awaitable)
 				{
 					co_await awaitable;
+				}
+
+				static ::winrt::Windows::Foundation::IAsyncAction wait(::winrt::Windows::Foundation::TimeSpan timeout)
+				{
+					co_await ::winrt::resume_after{ timeout };
+					throw ::winrt::hresult_canceled{};
 				}
 			};
 		};
@@ -537,7 +602,7 @@ namespace winrt_ex
 		{
 			// If you get "error C2039: 'await_resume': is not a member of '...'" error on a following line
 			// This means that Awaitable is not derived from IAsyncAction/async_action or IAsyncOperation<T>/async_operation<T>
-			using promise_wrapper_t = typename Policy::promise<decltype(awaitable.await_resume())>;
+			using promise_wrapper_t = typename Policy::promise<decltype(std::declval<Awaitable &>().await_resume())>;
 			return promise_wrapper_t::start(awaitable);
 		}
 
@@ -829,6 +894,7 @@ namespace winrt_ex
 		};
 	}
 
+	using details::no_result;
 	using details::async_action;
 	using details::async_operation;
 	using details::default_policy;
@@ -851,4 +917,32 @@ namespace std::experimental
 	template <typename TResult, typename ... Args>
 	struct coroutine_traits<winrt_ex::details::async_operation<TResult>, Args...> : public coroutine_traits<winrt::Windows::Foundation::IAsyncOperation<TResult>, Args ...>
 	{};
+}
+
+namespace winrt_ex
+{
+	namespace details
+	{
+		inline async_action throwing_timer(result_type<void>, winrt::Windows::Foundation::TimeSpan timeout)
+		{
+			co_await winrt::resume_after{ timeout };
+			throw winrt::hresult_canceled{};
+		}
+
+		template<class T>
+		inline async_operation<T> throwing_timer(result_type<T>, winrt::Windows::Foundation::TimeSpan timeout)
+		{
+			co_await winrt::resume_after{ timeout };
+			throw winrt::hresult_canceled{};
+			co_return{};	// this line is unnecessary, but prevents ICE (!!!)
+		}
+
+		template<class Awaitable>
+		inline auto execute_with_timeout(const Awaitable &awaitable, winrt::Windows::Foundation::TimeSpan timeout)
+		{
+			return when_any(awaitable, throwing_timer(get_result_type(awaitable), timeout));
+		}
+	}
+
+	using details::execute_with_timeout;
 }

@@ -141,9 +141,9 @@ IAsyncAction coroutine5()
 
 `when_all` function accepts any number of awaitables and produces an awaitable that is completed only when all input tasks are completed. If at least one of the tasks throws, the first thrown exception is rethrown by `when_all`.
 
-All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>` or `async_operation<T>`.
+Every input parameter must either be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable that implements `async_resume` member function.
 
-If all input tasks produce no result, `when_all` also produces no result, otherwise, it produces an `std::tuple<>` of all input parameter types.
+If the first input task produces `void`, `when_all` also produces `void`, otherwise, it produces an `std::tuple<>` of all input parameter types. In the latter case, none of the tasks are allowed to produce `void`.
 
 ```C++
 winrt_ex::async_action void_timer(TimeSpan duration)

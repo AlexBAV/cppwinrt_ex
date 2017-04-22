@@ -42,26 +42,43 @@ winrt_ex::async_operation<int> int_timer(TimeSpan duration)
 
 winrt_ex::async_action test_when_all_void()
 {
+	// Test when_all with awaitables
+	co_await winrt_ex::when_all(std::experimental::suspend_never{}, std::experimental::suspend_never{});
+
+	// Test when_all with IAsyncAction
 	co_await winrt_ex::when_all(void_timer(3s), void_timer(8s));
+}
+
+winrt_ex::async_action test_when_all_mixed()
+{
+	std::tuple<winrt_ex::no_result, bool> result = co_await winrt_ex::when_all(void_timer(2s), bool_timer(3s));
+	std::tuple<bool, int, winrt_ex::no_result> result2 = co_await winrt_ex::when_all(bool_timer(2s), int_timer(3s), void_timer(4s));
 }
 
 winrt_ex::async_action test_when_all_bool()
 {
+	// Test when_all with IAsyncOperation<T>
 	co_await winrt_ex::when_all(bool_timer(3s), bool_timer(8s));
 }
 
 winrt_ex::async_action test_when_any_void()
 {
+	// Test when_any with awaitables
+	co_await winrt_ex::when_any(std::experimental::suspend_never{}, std::experimental::suspend_never{});
+
+	// Test when_any with IAsyncAction
 	co_await winrt_ex::when_any(void_timer(3s), void_timer(8s));
 }
 
 winrt_ex::async_action test_when_any_bool()
 {
+	// Test when_any with IAsyncOperation<T>
 	co_await winrt_ex::when_any(bool_timer(3s), bool_timer(8s));
 }
 
 winrt_ex::async_action test_async_timer()
 {
+	// Test cancellable async_timer. Start a timer for 20 minutes and cancel it after 2 seconds
 	winrt_ex::async_timer atimer;
 
 	auto timer_task = winrt_ex::start_async(atimer.wait(20min));
@@ -78,13 +95,30 @@ winrt_ex::async_action test_async_timer()
 	}
 }
 
+winrt_ex::async_action test_execute_with_timeout()
+{
+	// Test execute_with_timeout
+	try
+	{
+		co_await winrt_ex::execute_with_timeout(std::experimental::suspend_always{}, 3s);
+		co_await winrt_ex::execute_with_timeout(bool_timer(20s), 3s);
+	}
+	catch (winrt::hresult_canceled)
+	{
+		int j = 0;
+		// TODO
+	}
+}
+
 int main()
 {
 	winrt::init_apartment();
 	{
+		test_execute_with_timeout().get();
 		test_async_timer().get();
 		test_when_all_void().get();
 		test_when_all_bool().get();
+		test_when_all_mixed().get();
 		test_when_any_void().get();
 		test_when_any_bool().get();
 
