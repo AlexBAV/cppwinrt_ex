@@ -1,6 +1,12 @@
-#include <array>
+#pragma once
+
 #include <atomic>
 #include <type_traits>
+#include <tuple>
+#include <utility>
+#include <exception>
+#include <memory>
+#include <experimental/resumable>
 
 #include <winrt/base.h>
 
@@ -8,7 +14,9 @@ namespace winrt_ex
 {
 	namespace details
 	{
+		// no_result will substitute 'void' in tuple
 		struct no_result {};
+
 		// get_result_type 
 		// get the coroutine result type
 		// supports IAsyncAction, async_action, IAsyncOperation<T>, async_operation<T> and awaitable object that implements await_resume
@@ -54,6 +62,7 @@ namespace winrt_ex
 			return get_result_type(first);
 		}
 
+		// Get a first type in a variadic type list
 		template<class...T>
 		struct get_first;
 
@@ -114,7 +123,6 @@ namespace winrt_ex
 			[[maybe_unused]] auto x = { when_all_helper_single<I>(master, std::get<I>(std::move(tuple)))... };
 		}
 
-		// void case
 		template<class...Awaitables>
 		struct when_all_awaitable_base
 		{
@@ -130,7 +138,7 @@ namespace winrt_ex
 
 			when_all_awaitable_base(when_all_awaitable_base &&o) noexcept :
 				exception{ std::move(o.exception) },
-				counter{ o.counter.load(std::memory_order_relaxed) },	// it is safe to "move" atomic this way because we don't use it until the final instance is allocated
+				counter{ o.counter.load(std::memory_order_relaxed) },	// it is safe to "move" atomic this way because we don't "use" it until the final instance is allocated
 				resume{ o.resume },
 				awaitables{ std::move(o.awaitables) }
 			{}
@@ -154,6 +162,7 @@ namespace winrt_ex
 			}
 		};
 
+		// void case
 		template<class...Awaitables>
 		struct when_all_awaitable_void : when_all_awaitable_base<Awaitables...>
 		{
@@ -265,7 +274,7 @@ namespace winrt_ex
 		template<class...Awaitables>
 		inline auto when_all(Awaitables &&...awaitables)
 		{
-			static_assert(sizeof...(Awaitables) != 0, "when_all must be passed at least one argument");
+			static_assert(sizeof...(Awaitables) >= 2, "when_all must be passed at least two arguments");
 			using first_type = decltype(get_first_result_type(awaitables...));
 
 			return when_all_impl(
@@ -469,8 +478,8 @@ namespace winrt_ex
 		template<class...Awaitables>
 		inline auto when_any(Awaitables &&...awaitables)
 		{
-			static_assert(sizeof...(Awaitables) != 0, "when_any must be passed at least one argument");
-			static_assert(are_all_same_v<decltype(get_result_type(awaitables))...>, "when_any requires all awaitables to yield the same type");
+			static_assert(sizeof...(Awaitables) >= 2, "when_any must be passed at least two arguments");
+			static_assert(are_all_same_v<decltype(get_result_type(awaitables))...>, "when_any requires all awaitables to produce the same type");
 
 			return when_any_impl(get_first_result_type(awaitables...), std::forward<Awaitables>(awaitables)...);
 		}
@@ -535,7 +544,7 @@ namespace winrt_ex
 			return{ async };
 		}
 
-		// run
+		// start & start_async
 		// methods "starts" an asynchronous operation that only starts in await_suspend
 		struct default_policy
 		{
@@ -551,8 +560,8 @@ namespace winrt_ex
 
 				static ::winrt::Windows::Foundation::IAsyncOperation<T> wait(winrt::Windows::Foundation::TimeSpan timeout)
 				{
-					co_await timeout;
-					throw winrt::hresult_cancelled{};
+					co_await ::winrt::resume_after{ timeout };
+					throw ::winrt::hresult_canceled{};
 				}
 			};
 
@@ -598,12 +607,10 @@ namespace winrt_ex
 		};
 
 		template<class Policy,class Awaitable>
-		inline auto start(const Awaitable &awaitable)
+		inline auto start(Awaitable &&awaitable)
 		{
-			// If you get "error C2039: 'await_resume': is not a member of '...'" error on a following line
-			// This means that Awaitable is not derived from IAsyncAction/async_action or IAsyncOperation<T>/async_operation<T>
 			using promise_wrapper_t = typename Policy::promise<decltype(std::declval<Awaitable &>().await_resume())>;
-			return promise_wrapper_t::start(awaitable);
+			return promise_wrapper_t::start(std::forward<Awaitable>(awaitable));
 		}
 
 		template<class Awaitable>
@@ -894,6 +901,7 @@ namespace winrt_ex
 		};
 	}
 
+	// Bring public stuff to winrt_ex namespace
 	using details::no_result;
 	using details::async_action;
 	using details::async_operation;
@@ -923,6 +931,7 @@ namespace winrt_ex
 {
 	namespace details
 	{
+		// execute_with_timeout
 		inline async_action throwing_timer(result_type<void>, winrt::Windows::Foundation::TimeSpan timeout)
 		{
 			co_await winrt::resume_after{ timeout };

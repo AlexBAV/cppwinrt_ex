@@ -21,6 +21,16 @@ The library has been tested on Microsoft Visual Studio 2017 Version 15.1 (26403.
 
 `cppwinrt_ex` library has all its classes and functions defined in `winrt_ex` namespace.
 
+## TOC
+
+* [`async_action` and `async_operation<T>` Classes]
+* [`start` and `start_async` Functions]
+* [`async_timer` Class]
+* [`resumable_io_timeout` Class]
+* [`when_all` Function]
+* [`when_any` Function]
+* [`execute_with_timeout` Function]
+
 ### `async_action` and `async_operation<T>` Classes
 
 `cppwinrt` library defines two classes: `winrt::Windows::Foundation::IAsyncAction` and `winrt::Windows::Foundation::IAsyncOperation<T>` as promise classes to be used by C++ coroutines.
@@ -97,7 +107,7 @@ IAsyncAction coroutine4()
     try
     {
         co_await timer.wait(20min);
-    } catch(hresult_cancelled)
+    } catch(hresult_canceled)
     {
         // the wait has been cancelled
     }
@@ -113,7 +123,7 @@ void cancel_wait()
 
 ### `resumable_io_timeout` Class
 
-This is a version of `cppwinrt`'s `resumable_io` class that supports timeout for I/O operations. Its `start` method requires an additional parameter that specifies the I/O operation's timeout. If operation does not finish within a given time, it is cancelled and `hresult_cancelled` exception is propagated to the continuation:
+This is a version of `cppwinrt`'s `resumable_io` class that supports timeout for I/O operations. Its `start` method requires an additional parameter that specifies the I/O operation's timeout. If operation does not finish within a given time, it is cancelled and `hresult_canceled` exception is propagated to the continuation:
 
 ```C++
 winrt_ex::resumable_io_timeout io{ handle_to_serial_port };
@@ -127,7 +137,7 @@ IAsyncAction coroutine5()
             check(::ReadFile(handle_to_serial_port, ... ));
         }, 10s);
         // Operation succeeded, continue processing
-    } catch(hresult_cancelled)
+    } catch(hresult_canceled)
     {
         // operation timeout, data not ready
     } catch(hresult_error)
@@ -143,24 +153,24 @@ IAsyncAction coroutine5()
 
 Every input parameter must either be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable that implements `async_resume` member function.
 
-If the first input task produces `void`, `when_all` also produces `void`, otherwise, it produces an `std::tuple<>` of all input parameter types. In the latter case, none of the tasks are allowed to produce `void`.
+If all input tasks produce `void`, `when_all` also produces `void`, otherwise, it produces an `std::tuple<>` of all input parameter types. For `void` tasks, an empty type `winrt_ex::no_result` is used in the tuple.
 
 ```C++
 winrt_ex::async_action void_timer(TimeSpan duration)
 {
-	co_await duration;
+    co_await duration;
 }
 
 winrt_ex::async_operation<bool> bool_timer(TimeSpan duration)
 {
-	co_await duration;
-	co_return true;
+    co_await duration;
+    co_return true;
 }
 
 winrt_ex::async_operation<int> int_timer(TimeSpan duration)
 {
-	co_await duration;
-	co_return 10;
+    co_await duration;
+    co_return 10;
 }
 
 IAsyncAction coroutine6()
@@ -170,16 +180,19 @@ IAsyncAction coroutine6()
 
     // The following operation will complete in 30 seconds and produce std::tuple<bool, bool, int>
     std::tuple<bool, bool, int> result = co_await winrt_ex::when_all(bool_timer(10s), bool_timer(20s), int_timer(30s));
+
+    // The following operation will complete in 30 seconds and produce std::tuple<bool, no_result, int>
+    std::tuple<bool, no_result, int> result = co_await winrt_ex::when_all(bool_timer(10s), winrt::resume_after{20s}, int_timer(30s));
 }
 ```
 
 ### `when_any` Function
 
-`when_any` function accepts any number of awaitables and produce an awaitable that is completed when at least one of the input tasks is completed. If the first completed task throws, the thrown exception is rethrown by `when_any`.
+`when_any` function accepts any number of awaitables and produces an awaitable that is completed when at least one of the input tasks is completed. If the first completed task throws, the thrown exception is rethrown by `when_any`.
 
-All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>` or `async_operation<T>` and *must all be of the same type*.
+All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable type that implements `await_resume` method and **must all be of the same type**.
 
-**`when_any` does not cancel any non-completed tasks.** When other tasks complete, their results are silently discarded. `when_any` makes sure the control block does not get destroyed until all tasks complete.
+`when_any` **does not cancel any non-completed tasks.** When other tasks complete, their results are silently discarded. `when_any` makes sure the control block does not get destroyed until all tasks complete.
 
 If all input tasks produce no result, `when_any` produces the index to the first completed task. Otherwise, it produces `std::pair<T, size_t>`, where the first result is the result of completed task and second is an index of completed task:
 
@@ -190,6 +203,26 @@ IAsyncAction coroutine7()
     size_t index = co_await winrt_ex::when_any(void_timer(10s), void_timer(20s), void_timer(30s));
 
     // The following operation will complete in 10 seconds and produce std::pair<bool, size_t> { true, 0 }
-    std::pair<bool, size_t> result = co_await winrt_ex::when_all(bool_timer(10s), bool_timer(20s), bool_timer(30s));
+    std::pair<bool, size_t> result = co_await winrt_ex::when_any(bool_timer(10s), bool_timer(20s), bool_timer(30s));
+}
+```
+
+### `execute_with_timeout` Function
+
+This function takes an awaitable (and supports the same awaitable types as `when_all` function) and a time duration and returns an awaitable. When it is awaited, it either produces the result of the original awaitable or throws `hresult_canceled` exception if timeout elapses.
+
+It does not cancel the input task if timeout elapses.
+
+```C++
+IAsyncAction coroutine8()
+{
+    try
+    {
+        co_await winrt_ex::execute_with_timeout(std::experimental::suspend_always{}, 3s);
+    }
+    catch (winrt::hresult_canceled)
+    {
+        // Timeout has elapsed
+    }
 }
 ```

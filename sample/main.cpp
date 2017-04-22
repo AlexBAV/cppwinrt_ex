@@ -101,6 +101,14 @@ winrt_ex::async_action test_execute_with_timeout()
 	try
 	{
 		co_await winrt_ex::execute_with_timeout(std::experimental::suspend_always{}, 3s);
+	}
+	catch (winrt::hresult_canceled)
+	{
+		int j = 0;
+		// TODO
+	}
+	try
+	{
 		co_await winrt_ex::execute_with_timeout(bool_timer(20s), 3s);
 	}
 	catch (winrt::hresult_canceled)
