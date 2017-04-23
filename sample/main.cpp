@@ -68,7 +68,7 @@ winrt_ex::async_action test_when_any_void()
 	co_await winrt_ex::when_any(std::experimental::suspend_never{}, std::experimental::suspend_never{});
 
 	// Test when_any with IAsyncAction
-//	co_await winrt_ex::when_any(void_timer(3s), void_timer(8s));
+	co_await winrt_ex::when_any(void_timer(3s), void_timer(8s));
 }
 
 winrt_ex::async_action test_when_any_bool()
