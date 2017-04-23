@@ -1,3 +1,6 @@
+#include <chrono>
+#include <iostream>
+
 #include <experimental/resumable>
 #include <cppwinrt_ex/core.h>
 
@@ -15,8 +18,6 @@ namespace winrt::ABI::Windows::Foundation \
 // end of macro
 
 SPECIALIZE(bool)
-using V = std::tuple<bool, bool, bool>;
-SPECIALIZE(V)
 SPECIALIZE(int)
 
 using namespace winrt;
@@ -52,7 +53,7 @@ winrt_ex::async_action test_when_all_void()
 winrt_ex::async_action test_when_all_mixed()
 {
 	std::tuple<winrt_ex::no_result, bool> result = co_await winrt_ex::when_all(void_timer(2s), bool_timer(3s));
-	std::tuple<bool, int, winrt_ex::no_result> result2 = co_await winrt_ex::when_all(bool_timer(2s), int_timer(3s), void_timer(4s));
+	std::tuple<bool, int, winrt_ex::no_result> result2 = co_await winrt_ex::when_all(bool_timer(2s), int_timer(3s), winrt::resume_after{ 4s });
 }
 
 winrt_ex::async_action test_when_all_bool()
@@ -67,7 +68,7 @@ winrt_ex::async_action test_when_any_void()
 	co_await winrt_ex::when_any(std::experimental::suspend_never{}, std::experimental::suspend_never{});
 
 	// Test when_any with IAsyncAction
-	co_await winrt_ex::when_any(void_timer(3s), void_timer(8s));
+//	co_await winrt_ex::when_any(void_timer(3s), void_timer(8s));
 }
 
 winrt_ex::async_action test_when_any_bool()
@@ -90,8 +91,7 @@ winrt_ex::async_action test_async_timer()
 	}
 	catch (winrt::hresult_canceled)
 	{
-		int j = 0;
-		// TODO
+		std::wcout << L"Timer cancelled. ";
 	}
 }
 
@@ -104,8 +104,7 @@ winrt_ex::async_action test_execute_with_timeout()
 	}
 	catch (winrt::hresult_canceled)
 	{
-		int j = 0;
-		// TODO
+		std::wcout << L"Operation cancelled. ";
 	}
 	try
 	{
@@ -113,24 +112,35 @@ winrt_ex::async_action test_execute_with_timeout()
 	}
 	catch (winrt::hresult_canceled)
 	{
-		int j = 0;
-		// TODO
+		std::wcout << L"Operation cancelled. ";
 	}
+}
+
+template<class F>
+void measure(const wchar_t *name, const F &f)
+{
+	std::wcout << L"Starting operation " << name << L" ... ";
+	auto start = std::chrono::system_clock::now();
+	f();
+	auto stop = std::chrono::system_clock::now();
+
+	auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(stop - start);
+	std::wcout << seconds.count() << L" seconds\r\n";
 }
 
 int main()
 {
 	winrt::init_apartment();
 	{
-		test_execute_with_timeout().get();
-		test_async_timer().get();
-		test_when_all_void().get();
-		test_when_all_bool().get();
-		test_when_all_mixed().get();
-		test_when_any_void().get();
-		test_when_any_bool().get();
+		measure(L"test_execute_with_timeout", [] { test_execute_with_timeout().get(); });
+		measure(L"test_async_timer", [] { test_async_timer().get(); });
+		measure(L"test_when_all_void", [] { test_when_all_void().get(); });
+		measure(L"test_when_all_bool", [] { test_when_all_bool().get(); });
+		measure(L"test_when_all_mixed", [] { test_when_all_mixed().get(); });
+		measure(L"test_when_any_void", [] { test_when_any_void().get(); });
+		measure(L"test_when_any_bool", [] {test_when_any_bool().get(); });
 
-		Sleep(INFINITE);
+		Sleep(5000);
 	}
 	winrt::uninit_apartment();
 }

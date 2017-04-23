@@ -6,6 +6,7 @@
 #include <utility>
 #include <exception>
 #include <memory>
+#include <array>
 #include <experimental/resumable>
 
 #include <winrt/base.h>
@@ -360,10 +361,10 @@ namespace winrt_ex
 			}
 		}
 
-		template<class Tuple, size_t...I>
-		inline void when_any_helper(const std::shared_ptr<when_any_block_void> &master, Tuple &&tuple, std::index_sequence<I...>) noexcept
+		template<size_t N, class Tuple, size_t...I>
+		inline void when_any_helper(std::array<std::shared_ptr<when_any_block_void>, N> &&master, Tuple &&tuple, std::index_sequence<I...>) noexcept
 		{
-			[[maybe_unused]] auto x = { when_any_helper_single<I>(master, std::get<I>(std::move(tuple)))... };
+			[[maybe_unused]] auto x = { when_any_helper_single<I>(std::get<I>(std::move(master)), std::get<I>(std::move(tuple)))... };
 		}
 
 		template<class...Awaitables>
@@ -377,7 +378,8 @@ namespace winrt_ex
 				when_any_awaitable(Awaitables &&...awaitables) noexcept :
 					awaitables{ std::forward<Awaitables>(awaitables)... },
 					ptr{ std::make_shared<when_any_block_void>() }
-				{}
+				{
+				}
 
 				bool await_ready() const noexcept
 				{
@@ -387,8 +389,13 @@ namespace winrt_ex
 				void await_suspend(std::experimental::coroutine_handle<> handle)
 				{
 					ptr->resume.store(handle, std::memory_order_relaxed);
+					std::array<std::shared_ptr<when_any_block_void>, sizeof...(Awaitables)> references;
+					std::fill(references.begin(), references.end(), ptr);
+
+					auto awaitables_local_copy = std::move(awaitables);
+
 					using index_t = std::make_index_sequence<sizeof...(Awaitables)>;
-					when_any_helper(ptr, awaitables, index_t{});
+					when_any_helper(std::move(references), std::move(awaitables_local_copy), index_t{});
 				}
 
 				size_t await_resume() const
@@ -417,10 +424,10 @@ namespace winrt_ex
 			}
 		}
 
-		template<class T, class Tuple, size_t...I>
-		inline void when_any_helper_value(const std::shared_ptr<when_any_block_value<T>> &master, Tuple &tuple, std::index_sequence<I...>) noexcept
+		template<class T, size_t N, class Tuple, size_t...I>
+		inline void when_any_helper_value(std::array<std::shared_ptr<when_any_block_value<T>>, N> &&master, Tuple &&tuple, std::index_sequence<I...>) noexcept
 		{
-			[[maybe_unused]] auto x = { when_any_helper_single_value<T>(master, std::get<I>(std::move(tuple)), I)... };
+			[[maybe_unused]] auto x = { when_any_helper_single_value<T>(std::get<I>(std::move(master)), std::get<I>(std::move(tuple)), I)... };
 		}
 
 
@@ -445,8 +452,12 @@ namespace winrt_ex
 				void await_suspend(std::experimental::coroutine_handle<> handle)
 				{
 					ptr->resume.store(handle, std::memory_order_relaxed);
+					std::array<std::shared_ptr<when_any_block_value<T>>, sizeof...(Awaitables)> references;
+					std::fill(references.begin(), references.end(), ptr);
+
+					auto awaitables_copy = std::move(awaitables);
 					using index_t = std::make_index_sequence<sizeof...(Awaitables)>;
-					when_any_helper_value(ptr, awaitables, index_t{});
+					when_any_helper_value(std::move(references), std::move(awaitables_copy), index_t{});
 				}
 
 				std::pair<T, size_t> await_resume() const
