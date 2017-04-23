@@ -23,7 +23,7 @@ The library has been tested on Microsoft Visual Studio 2017 Version 15.1 (26403.
 
 ## TOC
 
-* [`async_action` and `async_operation<T>` Classes](#t1)
+* [`async_action` and `async_operation<T>` Classes][]
 * [`start` and `start_async` Functions](#t2)
 * [`async_timer` Class](#t3)
 * [`resumable_io_timeout` Class](#t4)
