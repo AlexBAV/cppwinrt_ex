@@ -23,15 +23,15 @@ The library has been tested on Microsoft Visual Studio 2017 Version 15.1 (26403.
 
 ## TOC
 
-* [`async_action` and `async_operation<T>` Classes]()
-* [`start` and `start_async` Functions](#t2)
-* [`async_timer` Class](#t3)
-* [`resumable_io_timeout` Class](#t4)
-* [`when_all` Function](#t5)
-* [`when_any` Function](#t6)
-* [`execute_with_timeout` Function](#t7)
+* [`async_action` and `async_operation<T>` Classes](#async_action-and-async_operationt-classes)
+* [`start` and `start_async` Functions](#start-and-start_async-functions)
+* [`async_timer` Class](#async_timer-class)
+* [`resumable_io_timeout` Class](#resumable_io_timeout-class)
+* [`when_all` Function](#when_all-function)
+* [`when_any` Function](#when_any-function)
+* [`execute_with_timeout` Function](#execute_with_timeout-function)
 
-### `async_action` and `async_operation<T>` Classes {#t1}
+### `async_action` and `async_operation<T>` Classes
 
 `cppwinrt` library defines two classes: `winrt::Windows::Foundation::IAsyncAction` and `winrt::Windows::Foundation::IAsyncOperation<T>` as promise classes to be used by C++ coroutines.
 
@@ -41,7 +41,7 @@ The only problem with these classes is that they force continuation on original 
 
 **Note that coroutines directly called from UI thread should continue to use original versions.**
 
-### `start` and `start_async` Functions {#t2}
+### `start` and `start_async` Functions
 
 `cppwinrt` provides a number of convenient utility classes to initiate asynchronous waits and I/O, among other things. The only problem with those classes is that the operation does not start until the caller begins _awaiting_ its result. Consider the following:
 
@@ -95,7 +95,7 @@ IAsyncAction coroutine3()
 
 Lirary also has `winrt_ex::start_async` version that has `async_action` or `async_operation<T>` as its return type.
 
-### `async_timer` Class {#t3}
+### `async_timer` Class
 
 This is an awaitable cancellable timer. Its usage is very simple:
 
@@ -121,7 +121,7 @@ void cancel_wait()
 
 **Note that current version runs the timer continuation inside the call to the `cancel` method. This might be changed in the future.**
 
-### `resumable_io_timeout` Class {#t4}
+### `resumable_io_timeout` Class
 
 This is a version of `cppwinrt`'s `resumable_io` class that supports timeout for I/O operations. Its `start` method requires an additional parameter that specifies the I/O operation's timeout. If operation does not finish within a given time, it is cancelled and `hresult_canceled` exception is propagated to the continuation:
 
@@ -147,7 +147,7 @@ IAsyncAction coroutine5()
 }
 ```
 
-### `when_all` Function {#t5}
+### `when_all` Function
 
 `when_all` function accepts any number of awaitables and produces an awaitable that is completed only when all input tasks are completed. If at least one of the tasks throws, the first thrown exception is rethrown by `when_all`.
 
@@ -186,7 +186,7 @@ IAsyncAction coroutine6()
 }
 ```
 
-### `when_any` Function {#t6}
+### `when_any` Function
 
 `when_any` function accepts any number of awaitables and produces an awaitable that is completed when at least one of the input tasks is completed. If the first completed task throws, the thrown exception is rethrown by `when_any`.
 
@@ -207,7 +207,7 @@ IAsyncAction coroutine7()
 }
 ```
 
-### `execute_with_timeout` Function {#t7}
+### `execute_with_timeout` Function
 
 This function takes an awaitable (and supports the same awaitable types as `when_all` function) and a time duration and returns an awaitable. When it is awaited, it either produces the result of the original awaitable or throws `hresult_canceled` exception if timeout elapses.
 
