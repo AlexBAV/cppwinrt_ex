@@ -1,3 +1,10 @@
+//-------------------------------------------------------------------------------------------------------
+// Copyright (C) 2016 HHD Software Ltd.
+// Written by Alexander Bessonov
+//
+// Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+//-------------------------------------------------------------------------------------------------------
+
 #include <chrono>
 #include <iostream>
 
@@ -120,9 +127,9 @@ template<class F>
 void measure(const wchar_t *name, const F &f)
 {
 	std::wcout << L"Starting operation " << name << L" ... ";
-	auto start = std::chrono::system_clock::now();
+	auto start = std::chrono::high_resolution_clock::now();
 	f();
-	auto stop = std::chrono::system_clock::now();
+	auto stop = std::chrono::high_resolution_clock::now();
 
 	auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(stop - start);
 	std::wcout << seconds.count() << L" seconds\r\n";
