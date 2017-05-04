@@ -50,8 +50,25 @@ namespace winrt_ex
 		template<class T>
 		constexpr bool has_await_resume_v = has_await_resume<T>::value;
 
+		// "external" cae
+		template<class, class = std::void_t<>>
+		struct has_external_await_resume : std::false_type {};
+
+		template<class T>
+		struct has_external_await_resume<T, std::void_t<decltype(await_resume(std::declval<T &>()))>> : std::true_type {};
+
+		template<class T>
+		constexpr bool has_external_await_resume_v = has_external_await_resume<T>::value;
+
+		//
 		template<class T>
 		constexpr result_type<decltype(std::declval<T &>().await_resume())> get_result_type(const T &, std::enable_if_t<has_await_resume_v<T>, void *> = nullptr)
+		{
+			return {};
+		}
+
+		template<class T>
+		constexpr result_type<decltype(await_resume(std::declval<T &>()))> get_result_type(const T &, std::enable_if_t<has_external_await_resume_v<T>, void *> = nullptr)
 		{
 			return {};
 		}

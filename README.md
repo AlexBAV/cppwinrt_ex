@@ -151,7 +151,7 @@ IAsyncAction coroutine5()
 
 `when_all` function accepts any number of awaitables and produces an awaitable that is completed only when all input tasks are completed. If at least one of the tasks throws, the first thrown exception is rethrown by `when_all`.
 
-Every input parameter must either be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable that implements `async_resume` member function.
+Every input parameter must either be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable that implements `await_resume` member function (or has a free function `await_resume`).
 
 If all input tasks produce `void`, `when_all` also produces `void`, otherwise, it produces an `std::tuple<>` of all input parameter types. For `void` tasks, an empty type `winrt_ex::no_result` is used in the tuple.
 
@@ -190,7 +190,7 @@ IAsyncAction coroutine6()
 
 `when_any` function accepts any number of awaitables and produces an awaitable that is completed when at least one of the input tasks is completed. If the first completed task throws, the thrown exception is rethrown by `when_any`.
 
-All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable type that implements `await_resume` method and **must all be of the same type**.
+All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable type that implements `await_resume` member function (or has a free function `await_resume`) and **must all be of the same type**.
 
 `when_any` **does not cancel any non-completed tasks.** When other tasks complete, their results are silently discarded. `when_any` makes sure the control block does not get destroyed until all tasks complete.
 

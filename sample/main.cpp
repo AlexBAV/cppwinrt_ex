@@ -4,6 +4,8 @@
 #include <experimental/resumable>
 #include <cppwinrt_ex/core.h>
 
+#include <future>
+
 #pragma comment(lib, "windowsapp")
 
 #define SPECIALIZE(type) \
@@ -59,7 +61,9 @@ winrt_ex::async_action test_when_all_mixed()
 winrt_ex::async_action test_when_all_bool()
 {
 	// Test when_all with IAsyncOperation<T>
-	co_await winrt_ex::when_all(bool_timer(3s), bool_timer(8s));
+	std::promise<bool> promise;
+	promise.set_value(true);
+	co_await winrt_ex::when_all(bool_timer(3s), bool_timer(8s), promise.get_future());
 }
 
 winrt_ex::async_action test_when_any_void()
