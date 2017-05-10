@@ -1282,10 +1282,21 @@ namespace winrt_ex
 				return promise->start_async(resume);
 			}
 
-			T await_resume()
+			void iawait_resume(std::true_type)
+			{
+				promise->get();
+			}
+
+			T  iawait_resume(std::false_type)
 			{
 				return std::move(promise->get());
 			}
+
+			auto await_resume()
+			{
+				return iawait_resume(std::is_same<T, void>{});
+			}
+
 		};
 	}
 
