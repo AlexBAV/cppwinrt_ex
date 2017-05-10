@@ -14,6 +14,7 @@
 #include <exception>
 #include <memory>
 #include <array>
+#include <mutex>
 #include <experimental/resumable>
 
 #include <winrt/base.h>
@@ -989,4 +990,304 @@ namespace winrt_ex
 	}
 
 	using details::execute_with_timeout;
+}
+
+namespace winrt_ex
+{
+	namespace details
+	{
+		// Windows SRW lock wrapped in shared_mutex-friendly class
+		class srwlock
+		{
+			SRWLOCK m_lock{};
+		public:
+			srwlock(const srwlock &) = delete;
+			srwlock & operator=(const srwlock &) = delete;
+			srwlock() noexcept = default;
+
+			void lock() noexcept
+			{
+				AcquireSRWLockExclusive(&m_lock);
+			}
+
+			void lock_shared() noexcept
+			{
+				AcquireSRWLockShared(&m_lock);
+			}
+
+			bool try_lock() noexcept
+			{
+				return 0 != TryAcquireSRWLockExclusive(&m_lock);
+			}
+
+			void unlock() noexcept
+			{
+				ReleaseSRWLockExclusive(&m_lock);
+			}
+
+			void unlock_shared() noexcept
+			{
+				ReleaseSRWLockShared(&m_lock);
+			}
+		};
+
+
+		enum class status_t
+		{
+			running,
+			ready,
+			exception
+		};
+
+		struct promise_base0
+		{
+			srwlock lock;
+			std::experimental::coroutine_handle<> resume{};
+			std::exception_ptr exception;
+
+			status_t status{ status_t::running };
+
+			bool is_ready() const noexcept
+			{
+				return status != status_t::running;
+			}
+
+			void check_resume(std::unique_lock<srwlock> &&l)
+			{
+				if (resume)
+				{
+					l.unlock();
+					resume();
+				}
+			}
+
+			void set_exception(std::exception_ptr exception_)
+			{
+				std::unique_lock<srwlock> l(lock);
+				exception = exception_;
+				status = status_t::exception;
+				check_resume(std::move(l));
+			}
+
+			void check_exception()
+			{
+				std::unique_lock<srwlock> l(lock);
+				if (status == status_t::exception && exception)
+					std::rethrow_exception(exception);
+			}
+		};
+
+		template<class T>
+		struct promise_base : promise_base0
+		{
+			T value;
+
+			template<class V>
+			void return_value(V &&v)
+			{
+				std::unique_lock<srwlock> l(lock);
+				value = std::forward<V>(v);
+				status = status_t::ready;
+				check_resume(std::move(l));
+			}
+
+			T &get()
+			{
+				check_exception();
+				return value;
+			}
+		};
+
+		template<>
+		struct promise_base<void> : promise_base0
+		{
+			void return_void()
+			{
+				std::unique_lock<srwlock> l(lock);
+				status = status_t::ready;
+				check_resume(std::move(l));
+			}
+
+			struct empty_type {};
+
+			empty_type get()
+			{
+				check_exception();
+				return {};
+			}
+		};
+
+		template<class T>
+		class future_base
+		{
+		protected:
+			const T &iget(T &value) const &
+			{
+				return value;
+			}
+
+			T &&iget(T &value) &&
+			{
+				return std::move(value);
+			}
+		};
+
+		template<>
+		class future_base<void>
+		{
+		protected:
+			template<class T>
+			void iget(T &)
+			{
+			}
+		};
+
+		template<class T>
+		class future : public future_base<T>
+		{
+			struct promise_type_ : promise_base<T>
+			{
+				srwlock lock;
+				std::experimental::coroutine_handle<> destroy_resume{};
+				bool future_exists{ true };
+
+				//
+				bool start_async(std::experimental::coroutine_handle<> resume_)
+				{
+					const std::lock_guard<srwlock> l(lock);
+					if (is_ready())
+						return false;	// we already have a result
+					resume = resume_;
+					return true;
+				}
+
+				static std::experimental::suspend_never initial_suspend() noexcept
+				{
+					return {};
+				}
+
+				auto final_suspend() noexcept
+				{
+					struct awaiter
+					{
+						promise_type_ *pthis;
+
+						bool await_ready() const noexcept
+						{
+							pthis->lock.lock();
+							auto is_ready = !pthis->future_exists;
+							if (is_ready)
+								pthis->lock.unlock();
+							return is_ready;
+						}
+
+						void await_suspend(std::experimental::coroutine_handle<> resume) noexcept
+						{
+							pthis->destroy_resume = resume;
+							pthis->lock.unlock();
+						}
+
+						static void await_resume() noexcept
+						{
+						}
+					};
+					return awaiter{ this };
+				}
+
+				future<T> get_return_object() noexcept
+				{
+					return { this };
+				}
+
+				void destroy()
+				{
+					std::unique_lock<srwlock> l(lock);
+					future_exists = false;
+					if (destroy_resume)
+					{
+						l.unlock();
+						destroy_resume.destroy();
+					}
+				}
+			};
+
+			promise_type_ *promise;
+
+			future(promise_type_ *promise) noexcept :
+			promise{ promise }
+			{}
+
+			struct special_await
+			{
+				promise_type_ *promise;
+
+				bool await_ready() const
+				{
+					return promise->is_ready();
+				}
+
+				bool await_suspend(std::experimental::coroutine_handle<> resume)
+				{
+					return promise->start_async(resume);
+				}
+
+				void await_resume()
+				{
+				}
+			};
+
+		public:
+			using promise_type = promise_type_;
+
+			~future()
+			{
+				promise->destroy();
+			}
+
+			void wait()
+			{
+				if (promise->status != status_t::running)
+					return;
+
+				winrt::impl::lock x;
+				winrt::impl::condition_variable cv;
+				bool completed = false;
+
+				[&]()->winrt::fire_and_forget
+				{
+					co_await special_await{ promise };
+					const winrt::impl::lock_guard guard(x);
+					completed = true;
+					cv.wake_one();
+				}();
+
+				const winrt::impl::lock_guard guard(x);
+				cv.wait_while(x, [&] { return !completed; });
+			}
+
+			decltype(auto) get()
+			{
+				wait();
+				return iget(promise->get());
+			}
+
+			// await
+			bool await_ready() const
+			{
+				return promise->is_ready();
+			}
+
+			bool await_suspend(std::experimental::coroutine_handle<> resume)
+			{
+				return promise->start_async(resume);
+			}
+
+			T await_resume()
+			{
+				return std::move(promise->get());
+			}
+		};
+	}
+
+	using details::future;
 }
