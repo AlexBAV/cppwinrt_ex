@@ -15,42 +15,28 @@
 
 #pragma comment(lib, "windowsapp")
 
-#define SPECIALIZE(type) \
-namespace winrt::ABI::Windows::Foundation \
-{ \
-	template <> struct __declspec(uuid("3a14233f-a037-4ac0-a0ad-c4bb0bbf0111")) __declspec(novtable) AsyncActionProgressHandler<type> : impl_AsyncActionProgressHandler<type> {}; \
-	template <> struct __declspec(uuid("3a14233f-a037-4ac0-a0ad-c4bb0bbf0112")) __declspec(novtable) AsyncActionWithProgressCompletedHandler<type> : impl_AsyncActionWithProgressCompletedHandler<type> {}; \
-	template <> struct __declspec(uuid("3a14233f-a037-4ac0-a0ad-c4bb0bbf0115")) __declspec(novtable) AsyncOperationCompletedHandler<type> : impl_AsyncOperationCompletedHandler<type> {}; \
-	template <> struct __declspec(uuid("3a14233f-a037-4ac0-a0ad-c4bb0bbf0116")) __declspec(novtable) IAsyncActionWithProgress<type> : impl_IAsyncActionWithProgress<type> {}; \
-	template <> struct __declspec(uuid("3a14233f-a037-4ac0-a0ad-c4bb0bbf0117")) __declspec(novtable) IAsyncOperation<type> : impl_IAsyncOperation<type> {}; \
-} \
-// end of macro
-
-SPECIALIZE(bool)
-SPECIALIZE(int)
-
 using namespace winrt;
 using namespace Windows::Foundation;
 using namespace std::chrono_literals;
 
-winrt_ex::async_action void_timer(TimeSpan duration)
+winrt_ex::future<void> void_timer(TimeSpan duration)
 {
 	co_await duration;
 }
 
-winrt_ex::async_operation<bool> bool_timer(TimeSpan duration)
+winrt_ex::future<bool> bool_timer(TimeSpan duration)
 {
 	co_await duration;
 	co_return true;
 }
 
-winrt_ex::async_operation<int> int_timer(TimeSpan duration)
+winrt_ex::future<int> int_timer(TimeSpan duration)
 {
 	co_await duration;
 	co_return 10;
 }
 
-winrt_ex::async_action test_when_all_void()
+winrt_ex::future<void> test_when_all_void()
 {
 	// Test when_all with awaitables
 	co_await winrt_ex::when_all(std::experimental::suspend_never{}, std::experimental::suspend_never{});
@@ -59,13 +45,13 @@ winrt_ex::async_action test_when_all_void()
 	co_await winrt_ex::when_all(void_timer(3s), void_timer(8s));
 }
 
-winrt_ex::async_action test_when_all_mixed()
+winrt_ex::future<void> test_when_all_mixed()
 {
 	std::tuple<winrt_ex::no_result, bool> result = co_await winrt_ex::when_all(void_timer(2s), bool_timer(3s));
 	std::tuple<bool, int, winrt_ex::no_result> result2 = co_await winrt_ex::when_all(bool_timer(2s), int_timer(3s), winrt::resume_after{ 4s });
 }
 
-winrt_ex::async_action test_when_all_bool()
+winrt_ex::future<void> test_when_all_bool()
 {
 	// Test when_all with IAsyncOperation<T>
 	std::promise<bool> promise;
@@ -73,22 +59,23 @@ winrt_ex::async_action test_when_all_bool()
 	co_await winrt_ex::when_all(bool_timer(3s), bool_timer(8s), promise.get_future());
 }
 
-winrt_ex::async_action test_when_any_void()
+winrt_ex::future<void> test_when_any_void()
 {
 	// Test when_any with awaitables
 	co_await winrt_ex::when_any(std::experimental::suspend_never{}, std::experimental::suspend_never{});
 
+	auto timer1 = void_timer(3s);
 	// Test when_any with IAsyncAction
-	co_await winrt_ex::when_any(void_timer(3s), void_timer(8s));
+	co_await winrt_ex::when_any(timer1, void_timer(8s));
 }
 
-winrt_ex::async_action test_when_any_bool()
+winrt_ex::future<void> test_when_any_bool()
 {
 	// Test when_any with IAsyncOperation<T>
 	co_await winrt_ex::when_any(bool_timer(3s), bool_timer(8s));
 }
 
-winrt_ex::async_action test_async_timer()
+winrt_ex::future<void> test_async_timer()
 {
 	// Test cancellable async_timer. Start a timer for 20 minutes and cancel it after 2 seconds
 	winrt_ex::async_timer atimer;
@@ -106,7 +93,7 @@ winrt_ex::async_action test_async_timer()
 	}
 }
 
-winrt_ex::async_action test_execute_with_timeout()
+winrt_ex::future<void> test_execute_with_timeout()
 {
 	// Test execute_with_timeout
 	try

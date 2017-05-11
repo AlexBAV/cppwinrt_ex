@@ -15,7 +15,13 @@ This repository consists of the following subdirectories:
 
 ## Compiler Support
 
-The library has been tested on Microsoft Visual Studio 2017 Version 15.1 (26403.7).
+The library has been tested on Microsoft Visual Studio 2017 Version 15.2 (26430.4).
+
+## What's New
+
+### Version 0.2
+
+`async_action` and `async_operation<T>` classes have been removed. `future<T>`, a light-weight awaitable class is introduced instead. It is to be used in all coroutines that do not need to be resumed on the same thread. Coroutines that return future<T> may also be used starting with Windows Vista, which extends the range of supported OSes.
 
 ## Documentation
 
@@ -23,7 +29,7 @@ The library has been tested on Microsoft Visual Studio 2017 Version 15.1 (26403.
 
 ## TOC
 
-* [`async_action` and `async_operation<T>` Classes](#async_action-and-async_operationt-classes)
+* [`future<T>` Light-Weight Awaitable Class](#futuret-light-weight-awaitable-class)
 * [`start` and `start_async` Functions](#start-and-start_async-functions)
 * [`async_timer` Class](#async_timer-class)
 * [`resumable_io_timeout` Class](#resumable_io_timeout-class)
@@ -31,15 +37,18 @@ The library has been tested on Microsoft Visual Studio 2017 Version 15.1 (26403.
 * [`when_any` Function](#when_any-function)
 * [`execute_with_timeout` Function](#execute_with_timeout-function)
 
-### `async_action` and `async_operation<T>` Classes
+### `future<T>` Light-Weight Awaitable Class
 
-`cppwinrt` library defines two classes: `winrt::Windows::Foundation::IAsyncAction` and `winrt::Windows::Foundation::IAsyncOperation<T>` as promise classes to be used by C++ coroutines.
+`cppwinrt` introduces a light-weight awaitable class `future<T>`. It may be used as a return type for any coroutine. `T` should be `void` for coroutines returning `void`. `T` cannot be a reference.
 
-The only problem with these classes is that they force continuation on original thread's context, which sometimes is not desirable or even at all possible.
+Continuation is not guaranteed to execute on the same thread.
 
-`cppwinrt_ex` adds simplified versions of those classes, `async_action` and `async_operation<T>` that do not force return of execution control to original thread's context. This also slightly improves performance.
+`future<T>` provides a blocking `get()` method.
 
-**Note that coroutines directly called from UI thread should continue to use original versions.**
+#### Notes
+
+1. Coroutines in Windows Runtime application directly called from UI thread should use `IAsyncAction` and `IAsyncOperation<T>` because these types guarantee continuation to be executed on UI thread.
+2. In the current version, when `await_resume` is called as part of execution of `co_await` expression, future's value is _moved_ to the caller.
 
 ### `start` and `start_async` Functions
 
@@ -93,7 +102,7 @@ IAsyncAction coroutine3()
 
 `winrt_ex::start` supports awaitables that produce no result or awaitables that produce some result. Therefore, it behaves either as it has `IAsyncAction` return type or `IAsyncOperation<T>` return type.
 
-Lirary also has `winrt_ex::start_async` version that has `async_action` or `async_operation<T>` as its return type.
+Lirary also has `winrt_ex::start_async` version that has `future<T>` as its return type.
 
 ### `async_timer` Class
 
@@ -151,12 +160,12 @@ IAsyncAction coroutine5()
 
 `when_all` function accepts any number of awaitables and produces an awaitable that is completed only when all input tasks are completed. If at least one of the tasks throws, the first thrown exception is rethrown by `when_all`.
 
-Every input parameter must either be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable that implements `await_resume` member function (or has a free function `await_resume`).
+Every input parameter must either be `IAsyncAction`, `IAsyncOperation<T>` or an awaitable that implements `await_resume` member function (or has a free function `await_resume`).
 
 If all input tasks produce `void`, `when_all` also produces `void`, otherwise, it produces an `std::tuple<>` of all input parameter types. For `void` tasks, an empty type `winrt_ex::no_result` is used in the tuple.
 
 ```C++
-winrt_ex::async_action void_timer(TimeSpan duration)
+winrt_ex::future<void> void_timer(TimeSpan duration)
 {
     co_await duration;
 }
@@ -190,7 +199,7 @@ IAsyncAction coroutine6()
 
 `when_any` function accepts any number of awaitables and produces an awaitable that is completed when at least one of the input tasks is completed. If the first completed task throws, the thrown exception is rethrown by `when_any`.
 
-All input parameters must be `IAsyncAction`, `async_action`, `IAsyncOperation<T>`, `async_operation<T>` or an awaitable type that implements `await_resume` member function (or has a free function `await_resume`) and **must all be of the same type**.
+All input parameters must be `IAsyncAction`, `IAsyncOperation<T>` or an awaitable type that implements `await_resume` member function (or has a free function `await_resume`) and **must all be of the same type**.
 
 `when_any` **does not cancel any non-completed tasks.** When other tasks complete, their results are silently discarded. `when_any` makes sure the control block does not get destroyed until all tasks complete.
 

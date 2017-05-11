@@ -4,6 +4,9 @@
 //
 // Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
 //-------------------------------------------------------------------------------------------------------
+// Version 0.2
+// async_action & async_operation<T> classes removed
+// light-weight future<T> template added
 
 #pragma once
 
@@ -23,12 +26,359 @@ namespace winrt_ex
 {
 	namespace details
 	{
+		// future
+		// Windows SRW lock wrapped in shared_mutex-friendly class
+		class srwlock
+		{
+			SRWLOCK m_lock{};
+		public:
+			srwlock(const srwlock &) = delete;
+			srwlock & operator=(const srwlock &) = delete;
+			srwlock() noexcept = default;
+
+			void lock() noexcept
+			{
+				AcquireSRWLockExclusive(&m_lock);
+			}
+
+			void lock_shared() noexcept
+			{
+				AcquireSRWLockShared(&m_lock);
+			}
+
+			bool try_lock() noexcept
+			{
+				return 0 != TryAcquireSRWLockExclusive(&m_lock);
+			}
+
+			void unlock() noexcept
+			{
+				ReleaseSRWLockExclusive(&m_lock);
+			}
+
+			void unlock_shared() noexcept
+			{
+				ReleaseSRWLockShared(&m_lock);
+			}
+		};
+
+
+		enum class status_t
+		{
+			running,
+			ready,
+			exception
+		};
+
+		struct promise_base0
+		{
+			srwlock lock;
+			std::experimental::coroutine_handle<> resume{};
+			std::exception_ptr exception;
+			std::atomic<int> use_count{ 1 };
+
+			status_t status{ status_t::running };
+
+			bool is_ready() const noexcept
+			{
+				return status != status_t::running;
+			}
+
+			void check_resume(std::unique_lock<srwlock> &&l)
+			{
+				if (resume)
+				{
+					l.unlock();
+					resume();
+				}
+			}
+
+			void set_exception(std::exception_ptr exception_)
+			{
+				std::unique_lock<srwlock> l(lock);
+				exception = exception_;
+				status = status_t::exception;
+				check_resume(std::move(l));
+			}
+
+			void check_exception()
+			{
+				assert(is_ready());
+//				std::unique_lock<srwlock> l(lock);
+				if (status == status_t::exception && exception)
+					std::rethrow_exception(exception);
+			}
+		};
+
+		template<class T>
+		struct promise_base : promise_base0
+		{
+			T value;
+
+			template<class V>
+			void return_value(V &&v)
+			{
+				std::unique_lock<srwlock> l(lock);
+				value = std::forward<V>(v);
+				status = status_t::ready;
+				check_resume(std::move(l));
+			}
+
+			T &get()
+			{
+				check_exception();
+				return value;
+			}
+		};
+
+		template<>
+		struct promise_base<void> : promise_base0
+		{
+			void return_void()
+			{
+				std::unique_lock<srwlock> l(lock);
+				status = status_t::ready;
+				check_resume(std::move(l));
+			}
+
+			struct empty_type {};
+
+			empty_type get()
+			{
+				check_exception();
+				return {};
+			}
+		};
+
+		template<class T>
+		class future_base
+		{
+		protected:
+			const T &iget(T &value) const &
+			{
+				return value;
+			}
+
+			T &&iget(T &value) &&
+			{
+				return std::move(value);
+			}
+		};
+
+		template<>
+		class future_base<void>
+		{
+		protected:
+			template<class T>
+			void iget(T &)
+			{
+			}
+		};
+
+		template<class T>
+		class future : public future_base<T>
+		{
+			static_assert(!std::is_reference_v<T>, "future<T> is not allowed for reference types");
+			struct promise_type_ : promise_base<T>
+			{
+				srwlock lock;
+				std::experimental::coroutine_handle<> destroy_resume{};
+				bool future_exists{ true };
+
+				//
+				bool start_async(std::experimental::coroutine_handle<> resume_)
+				{
+					const std::lock_guard<srwlock> l(lock);
+					if (is_ready())
+						return false;	// we already have a result
+					resume = resume_;
+					return true;
+				}
+
+				static std::experimental::suspend_never initial_suspend() noexcept
+				{
+					return {};
+				}
+
+				auto final_suspend() noexcept
+				{
+					struct awaiter
+					{
+						promise_type_ *pthis;
+
+						bool await_ready() const noexcept
+						{
+							pthis->lock.lock();
+							auto is_ready = !pthis->future_exists;
+							if (is_ready)
+								pthis->lock.unlock();
+							return is_ready;
+						}
+
+						void await_suspend(std::experimental::coroutine_handle<> resume) noexcept
+						{
+							pthis->destroy_resume = resume;
+							pthis->lock.unlock();
+						}
+
+						static void await_resume() noexcept
+						{
+						}
+					};
+					return awaiter{ this };
+				}
+
+				future<T> get_return_object() noexcept
+				{
+					return { this };
+				}
+
+				void add_ref()
+				{
+					use_count.fetch_add(1, std::memory_order_relaxed);
+				}
+
+				void release()
+				{
+					if (1 == use_count.fetch_sub(1, std::memory_order_relaxed))
+						destroy();
+				}
+
+				void destroy()
+				{
+					std::unique_lock<srwlock> l(lock);
+					future_exists = false;
+					if (destroy_resume)
+					{
+						l.unlock();
+						destroy_resume.destroy();
+					}
+				}
+			};
+
+			promise_type_ *promise;
+
+			future(promise_type_ *promise) noexcept :
+				promise{ promise }
+			{}
+
+			struct special_await
+			{
+				promise_type_ *promise;
+
+				bool await_ready() const
+				{
+					return promise->is_ready();
+				}
+
+				bool await_suspend(std::experimental::coroutine_handle<> resume)
+				{
+					return promise->start_async(resume);
+				}
+
+				void await_resume()
+				{
+				}
+			};
+
+		public:
+			using promise_type = promise_type_;
+
+			~future()
+			{
+				if (promise)
+					promise->release();
+			}
+
+			future(const future &o) noexcept :
+			promise{ o.promise }
+			{
+				if (promise)
+					promise->add_ref();
+			}
+
+			future &operator =(const future &o) noexcept
+			{
+				if (promise)
+					promise->release();
+				promise = o.promise;
+				if (promise)
+					promise->add_ref();
+			}
+
+			future(future &&o) noexcept :
+				promise{ o.promise }
+			{
+				o.promise = nullptr;
+			}
+
+			future &operator =(future &&o) noexcept
+			{
+				using std::swap;
+				swap(promise, o.promise);
+				return *this;
+			}
+
+			void wait()
+			{
+				if (promise->status != status_t::running)
+					return;
+
+				winrt::impl::lock x;
+				winrt::impl::condition_variable cv;
+				bool completed = false;
+
+				[&]()->winrt::fire_and_forget
+				{
+					co_await special_await{ promise };
+					const winrt::impl::lock_guard guard(x);
+					completed = true;
+					cv.wake_one();
+				}();
+
+				const winrt::impl::lock_guard guard(x);
+				cv.wait_while(x, [&] { return !completed; });
+			}
+
+			decltype(auto) get()
+			{
+				wait();
+				return iget(promise->get());
+			}
+
+			// await
+			bool await_ready() const
+			{
+				return promise->is_ready();
+			}
+
+			bool await_suspend(std::experimental::coroutine_handle<> resume)
+			{
+				return promise->start_async(resume);
+			}
+
+			void iawait_resume(std::true_type)
+			{
+				promise->get();
+			}
+
+			decltype(auto) iawait_resume(std::false_type)
+			{
+				return std::move(promise->get());
+			}
+
+			decltype(auto) await_resume()
+			{
+				return iawait_resume(std::is_same<T, void>{});
+			}
+		};
+		
 		// no_result will substitute 'void' in tuple
 		struct no_result {};
 
 		// get_result_type 
 		// get the coroutine result type
-		// supports IAsyncAction, async_action, IAsyncOperation<T>, async_operation<T> and awaitable object that implements await_resume
+		// supports IAsyncAction, IAsyncOperation<T> and awaitable object that implements await_resume
 		// yields result_type<T> where T is a coroutine result type
 		template<class T>
 		struct result_type
@@ -239,7 +589,7 @@ namespace winrt_ex
 			template<class T>
 			struct transform
 			{
-				using type = std::conditional_t<std::is_same_v<result_type<void>, T>, no_result, typename T::type>;
+				using type = std::conditional_t<std::is_same_v<result_type<void>, T>, no_result, std::decay_t<typename T::type>>;
 			};
 
 			template<class T>
@@ -459,14 +809,15 @@ namespace winrt_ex
 		template<class T, class...Awaitables>
 		inline auto when_any_impl(result_type<T>, Awaitables &&...awaitables)
 		{
+			using value_type = std::decay_t<T>;
 			struct when_any_awaitable
 			{
-				std::shared_ptr<when_any_block_value<T>> ptr;
+				std::shared_ptr<when_any_block_value<value_type>> ptr;
 				std::tuple<std::decay_t<Awaitables>...> awaitables;
 
 				when_any_awaitable(Awaitables &&...awaitables) noexcept :
 					awaitables{ std::forward<Awaitables>(awaitables)... },
-					ptr{ std::make_shared<when_any_block_value<T>>() }
+					ptr{ std::make_shared<when_any_block_value<value_type>>() }
 				{}
 
 				bool await_ready() const noexcept
@@ -477,7 +828,7 @@ namespace winrt_ex
 				void await_suspend(std::experimental::coroutine_handle<> handle)
 				{
 					ptr->resume.store(handle, std::memory_order_relaxed);
-					std::array<std::shared_ptr<when_any_block_value<T>>, sizeof...(Awaitables)> references;
+					std::array<std::shared_ptr<when_any_block_value<value_type>>, sizeof...(Awaitables)> references;
 					std::fill(references.begin(), references.end(), ptr);
 
 					auto awaitables_copy = std::move(awaitables);
@@ -546,40 +897,6 @@ namespace winrt_ex
 			}
 		};
 
-		struct async_action : public ::winrt::Windows::Foundation::IAsyncAction
-		{
-			using IAsyncAction::IAsyncAction;
-
-			async_action(winrt::Windows::Foundation::IAsyncAction &&o) :
-				IAsyncAction{ std::move(o) }
-			{}
-
-			async_action() = default;
-		};
-
-		template<class T>
-		struct async_operation : public ::winrt::Windows::Foundation::IAsyncOperation<T>
-		{
-			using IAsyncOperation<T>::IAsyncOperation;
-
-			async_operation(winrt::Windows::Foundation::IAsyncOperation<T> &&o) :
-				IAsyncOperation<T>{ std::move(o) }
-			{}
-
-			async_operation() = default;
-		};
-
-		inline await_adapter<async_action> operator co_await(const async_action &async)
-		{
-			return { async };
-		}
-
-		template<class T>
-		inline await_adapter<async_operation<T>> operator co_await(const async_operation<T> &async)
-		{
-			return{ async };
-		}
-
 		// start & start_async
 		// methods "starts" an asynchronous operation that only starts in await_suspend
 		struct default_policy
@@ -624,10 +941,9 @@ namespace winrt_ex
 			struct promise
 			{
 				template<class Awaitable>
-				static async_operation<T> start(Awaitable awaitable)
+				static future<T> start(Awaitable awaitable)
 				{
-					auto result = co_await awaitable;
-					co_return result;
+					co_return co_await awaitable;
 				}
 			};
 
@@ -635,7 +951,7 @@ namespace winrt_ex
 			struct promise<void>
 			{
 				template<class Awaitable>
-				static async_action start(Awaitable awaitable)
+				static future<void> start(Awaitable awaitable)
 				{
 					co_await awaitable;
 				}
@@ -938,9 +1254,8 @@ namespace winrt_ex
 	}
 
 	// Bring public stuff to winrt_ex namespace
+	using details::future;
 	using details::no_result;
-	using details::async_action;
-	using details::async_operation;
 	using details::default_policy;
 	using details::ex_policy;
 	using details::async_timer;
@@ -952,35 +1267,27 @@ namespace winrt_ex
 	using details::when_any;
 }
 
-namespace std::experimental
-{
-	template <typename ... Args>
-	struct coroutine_traits<winrt_ex::details::async_action, Args ...> : public coroutine_traits<winrt::Windows::Foundation::IAsyncAction, Args...>
-	{};
-
-	template <typename TResult, typename ... Args>
-	struct coroutine_traits<winrt_ex::details::async_operation<TResult>, Args...> : public coroutine_traits<winrt::Windows::Foundation::IAsyncOperation<TResult>, Args ...>
-	{};
-}
-
 namespace winrt_ex
 {
 	namespace details
 	{
 		// execute_with_timeout
-		inline async_action throwing_timer(result_type<void>, winrt::Windows::Foundation::TimeSpan timeout)
+		inline future<void> throwing_timer(result_type<void>, winrt::Windows::Foundation::TimeSpan timeout)
 		{
 			co_await winrt::resume_after{ timeout };
 			throw winrt::hresult_canceled{};
 		}
 
+#pragma warning(push)
+#pragma warning(disable:4033)
 		template<class T>
-		inline async_operation<T> throwing_timer(result_type<T>, winrt::Windows::Foundation::TimeSpan timeout)
+		inline future<std::decay_t<T>> throwing_timer(result_type<T>, winrt::Windows::Foundation::TimeSpan timeout)
 		{
 			co_await winrt::resume_after{ timeout };
 			throw winrt::hresult_canceled{};
-			co_return{};	// this line is unnecessary, but prevents ICE (!!!)
+			co_return std::decay_t<T> {};	// this line is unnecessary, but prevents ICE (!!!)
 		}
+#pragma warning(pop)
 
 		template<class Awaitable>
 		inline auto execute_with_timeout(const Awaitable &awaitable, winrt::Windows::Foundation::TimeSpan timeout)
@@ -996,308 +1303,7 @@ namespace winrt_ex
 {
 	namespace details
 	{
-		// Windows SRW lock wrapped in shared_mutex-friendly class
-		class srwlock
-		{
-			SRWLOCK m_lock{};
-		public:
-			srwlock(const srwlock &) = delete;
-			srwlock & operator=(const srwlock &) = delete;
-			srwlock() noexcept = default;
 
-			void lock() noexcept
-			{
-				AcquireSRWLockExclusive(&m_lock);
-			}
-
-			void lock_shared() noexcept
-			{
-				AcquireSRWLockShared(&m_lock);
-			}
-
-			bool try_lock() noexcept
-			{
-				return 0 != TryAcquireSRWLockExclusive(&m_lock);
-			}
-
-			void unlock() noexcept
-			{
-				ReleaseSRWLockExclusive(&m_lock);
-			}
-
-			void unlock_shared() noexcept
-			{
-				ReleaseSRWLockShared(&m_lock);
-			}
-		};
-
-
-		enum class status_t
-		{
-			running,
-			ready,
-			exception
-		};
-
-		struct promise_base0
-		{
-			srwlock lock;
-			std::experimental::coroutine_handle<> resume{};
-			std::exception_ptr exception;
-
-			status_t status{ status_t::running };
-
-			bool is_ready() const noexcept
-			{
-				return status != status_t::running;
-			}
-
-			void check_resume(std::unique_lock<srwlock> &&l)
-			{
-				if (resume)
-				{
-					l.unlock();
-					resume();
-				}
-			}
-
-			void set_exception(std::exception_ptr exception_)
-			{
-				std::unique_lock<srwlock> l(lock);
-				exception = exception_;
-				status = status_t::exception;
-				check_resume(std::move(l));
-			}
-
-			void check_exception()
-			{
-				std::unique_lock<srwlock> l(lock);
-				if (status == status_t::exception && exception)
-					std::rethrow_exception(exception);
-			}
-		};
-
-		template<class T>
-		struct promise_base : promise_base0
-		{
-			T value;
-
-			template<class V>
-			void return_value(V &&v)
-			{
-				std::unique_lock<srwlock> l(lock);
-				value = std::forward<V>(v);
-				status = status_t::ready;
-				check_resume(std::move(l));
-			}
-
-			T &get()
-			{
-				check_exception();
-				return value;
-			}
-		};
-
-		template<>
-		struct promise_base<void> : promise_base0
-		{
-			void return_void()
-			{
-				std::unique_lock<srwlock> l(lock);
-				status = status_t::ready;
-				check_resume(std::move(l));
-			}
-
-			struct empty_type {};
-
-			empty_type get()
-			{
-				check_exception();
-				return {};
-			}
-		};
-
-		template<class T>
-		class future_base
-		{
-		protected:
-			const T &iget(T &value) const &
-			{
-				return value;
-			}
-
-			T &&iget(T &value) &&
-			{
-				return std::move(value);
-			}
-		};
-
-		template<>
-		class future_base<void>
-		{
-		protected:
-			template<class T>
-			void iget(T &)
-			{
-			}
-		};
-
-		template<class T>
-		class future : public future_base<T>
-		{
-			struct promise_type_ : promise_base<T>
-			{
-				srwlock lock;
-				std::experimental::coroutine_handle<> destroy_resume{};
-				bool future_exists{ true };
-
-				//
-				bool start_async(std::experimental::coroutine_handle<> resume_)
-				{
-					const std::lock_guard<srwlock> l(lock);
-					if (is_ready())
-						return false;	// we already have a result
-					resume = resume_;
-					return true;
-				}
-
-				static std::experimental::suspend_never initial_suspend() noexcept
-				{
-					return {};
-				}
-
-				auto final_suspend() noexcept
-				{
-					struct awaiter
-					{
-						promise_type_ *pthis;
-
-						bool await_ready() const noexcept
-						{
-							pthis->lock.lock();
-							auto is_ready = !pthis->future_exists;
-							if (is_ready)
-								pthis->lock.unlock();
-							return is_ready;
-						}
-
-						void await_suspend(std::experimental::coroutine_handle<> resume) noexcept
-						{
-							pthis->destroy_resume = resume;
-							pthis->lock.unlock();
-						}
-
-						static void await_resume() noexcept
-						{
-						}
-					};
-					return awaiter{ this };
-				}
-
-				future<T> get_return_object() noexcept
-				{
-					return { this };
-				}
-
-				void destroy()
-				{
-					std::unique_lock<srwlock> l(lock);
-					future_exists = false;
-					if (destroy_resume)
-					{
-						l.unlock();
-						destroy_resume.destroy();
-					}
-				}
-			};
-
-			promise_type_ *promise;
-
-			future(promise_type_ *promise) noexcept :
-			promise{ promise }
-			{}
-
-			struct special_await
-			{
-				promise_type_ *promise;
-
-				bool await_ready() const
-				{
-					return promise->is_ready();
-				}
-
-				bool await_suspend(std::experimental::coroutine_handle<> resume)
-				{
-					return promise->start_async(resume);
-				}
-
-				void await_resume()
-				{
-				}
-			};
-
-		public:
-			using promise_type = promise_type_;
-
-			~future()
-			{
-				promise->destroy();
-			}
-
-			void wait()
-			{
-				if (promise->status != status_t::running)
-					return;
-
-				winrt::impl::lock x;
-				winrt::impl::condition_variable cv;
-				bool completed = false;
-
-				[&]()->winrt::fire_and_forget
-				{
-					co_await special_await{ promise };
-					const winrt::impl::lock_guard guard(x);
-					completed = true;
-					cv.wake_one();
-				}();
-
-				const winrt::impl::lock_guard guard(x);
-				cv.wait_while(x, [&] { return !completed; });
-			}
-
-			decltype(auto) get()
-			{
-				wait();
-				return iget(promise->get());
-			}
-
-			// await
-			bool await_ready() const
-			{
-				return promise->is_ready();
-			}
-
-			bool await_suspend(std::experimental::coroutine_handle<> resume)
-			{
-				return promise->start_async(resume);
-			}
-
-			void iawait_resume(std::true_type)
-			{
-				promise->get();
-			}
-
-			T  iawait_resume(std::false_type)
-			{
-				return std::move(promise->get());
-			}
-
-			auto await_resume()
-			{
-				return iawait_resume(std::is_same<T, void>{});
-			}
-
-		};
 	}
 
 	using details::future;
