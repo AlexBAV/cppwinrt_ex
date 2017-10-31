@@ -1,3 +1,7 @@
+# NOTE #
+
+This project was an early attempt of what later became [`corsl`](https://github.com/AlexBAV/corsl) library.
+
 # Overview of `cppwinrt_ex` Library
 
 This library is a small (and I hope growing) collection of utilities that complement the functionality of [`cppwinrt`](https://github.com/Microsoft/cppwinrt) library.
